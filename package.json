@@ -1,0 +1,52 @@
+{
+  "name": "dsh-memory",
+  "version": "0.6.1",
+  "description": "dsh 长期记忆插件：mem0 式事件化写入 + NAMS 式权重闭环 + Letta 式限额热层 + 工作区记忆分离，local（TS 一体化）/ python（HTTP 桥）双后端可切换",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./lib/*": "./lib/*.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": ["slots", "remote", "remote.settings", "remote.llm"]
+    }
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/*.js",
+    "scripts/*.mjs",
+    "scripts/*.example.json"
+  ],
+  "scripts": {
+    "test": "node test/smoke.test.mjs && node test/client-smoke.test.mjs && node test/apply-stub/run.mjs",
+    "test:live": "node test/live-smoke.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "long-term-memory",
+    "memory",
+    "ollama",
+    "rag"
+  ],
+  "author": "Poka",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Poka/dsh-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Poka/dsh-memory/issues"
+  },
+  "homepage": "https://github.com/Poka/dsh-memory#readme",
+  "engines": {
+    "node": ">=22"
+  }
+}

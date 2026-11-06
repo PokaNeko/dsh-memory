@@ -1,0 +1,8 @@
+{
+  "$comment": "存量卡工作区归类映射（可选，仅手动迁移用）。键 = 工作区标签（会话 cwd 的末级目录名，如 workspace / notes / project-a），值 = 该工作区下卡片 id 的列表；不在表内的卡一律归 '*'（跨工作区通用）。用法：把本文件复制成同目录的 ws-map.json，再按自己的记忆库填 id。ws-map.json 已被 .gitignore 排除，不会误提交。",
+  "workspace": ["替换成你的卡片 id", "替换成你的卡片 id"],
+  "notes": ["替换成你的卡片 id"],
+  "$example": {
+    "说明": "卡片 id 在 data/cards.json 的 cards[].id 里，或对话里 /memory list 查看；填错不影响运行，只是那张卡会退回通用域。"
+  }
+}
