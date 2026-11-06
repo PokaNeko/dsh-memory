@@ -40,12 +40,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Poka/dsh-memory.git"
+    "url": "git+https://github.com/PokaNeko/dsh-memory.git"
   },
   "bugs": {
-    "url": "https://github.com/Poka/dsh-memory/issues"
+    "url": "https://github.com/PokaNeko/dsh-memory/issues"
   },
-  "homepage": "https://github.com/Poka/dsh-memory#readme",
+  "homepage": "https://github.com/PokaNeko/dsh-memory#readme",
   "engines": {
     "node": ">=22"
   }

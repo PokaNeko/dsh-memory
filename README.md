@@ -25,7 +25,7 @@
 | 项 | 要求 |
 |---|---|
 | dsh | 能在 `profiles/plugins/` 下挂载本地插件（含 `agent/pre-step`、`systemPrompt.context` 等钩子） |
-| [dsh-api-stable](https://github.com/Poka/dsh-api-stable) | **必需**，v1。本插件从它取配置读取与版本门面，必须放在**同级目录** |
+| [dsh-api-stable](https://github.com/PokaNeko/dsh-api-stable) | **必需**，v1。本插件从它取配置读取与版本门面，必须放在**同级目录** |
 | Node.js | ≥ 22（ESM + `node:test`） |
 | ollama | 本地 embedding 模型 `bge-m3`（**嵌入模型不可随路由切换——一换就等于换了整个向量库**） |
 | 对话模型 | 本地 `qwen3:4b` 起步，或云端任意 OpenAI 兼容端点（DeepSeek / 通义 / GLM 等） |
@@ -45,8 +45,8 @@
 
 ```bash
 cd ~/.dsh/profiles/plugins
-git clone https://github.com/Poka/dsh-api-stable.git
-git clone https://github.com/Poka/dsh-memory.git
+git clone https://github.com/PokaNeko/dsh-api-stable.git
+git clone https://github.com/PokaNeko/dsh-memory.git
 ```
 
 然后在对应 profile 的 `cordis.patch.yml` 里挂上插件（相对 specifier 按 profile 目录解析，
