@@ -34,7 +34,7 @@ import { setSelfNames } from './lib/ingest.js';
 import { makeChatFn, makeDshChatFn, makeEmbedFn, probeOllama } from './lib/llm.js';
 import { collectModelCatalog, parseRuntimeList } from './lib/model-catalog.js';
 // 注入面净化（施工清单 A1/A2）：只在出口改写注入副本，真源不动。见 lib/prompt-safety.js 头注。
-import { buildRecallText, renderUntrustedBlock, sanitizeForContext } from './lib/prompt-safety.js';
+import { buildRecallText, renderUntrustedBlock, sanitizeForContext, truncateSafe } from './lib/prompt-safety.js';
 import { drainRetryQueue, enqueueRetry, loadRetryQueue, saveRetryQueue } from './lib/retry.js';
 import { GENERAL_WORKSPACE, resolveWorkspaceKey } from './lib/workspace.js';
 
@@ -365,6 +365,9 @@ export function apply(ctx, config) {
 	// ---- 运行时状态 ----
 	let hotText = '[长期记忆]（空）';
 	let ollamaOk = null; // null=未探测，true/false=最近一次探测或写入结果
+	// C3（契约 I5）：写入失败必须有一处用户可见面，不能只躺在 debug.log 里。
+	// 这里只记「最近一次」与累计次数，不做历史堆栈——状态面板要的是结论，不是日志。
+	const writeHealth = { okAt: 0, failAt: 0, failures: 0, lastError: '' };
 	let readyResolve;
 	const ready = new Promise((resolve) => { readyResolve = resolve; });
 	const lastRecallTurn = new Map(); // sessionId → turn（每轮只注入一次）
@@ -706,6 +709,7 @@ export function apply(ctx, config) {
 			syncConfig();
 			const report = await backend.remember(dialog, options);
 			ollamaOk = true;
+			writeHealth.okAt = Date.now();
 			await refreshHot();
 			void debugLog(
 				`remember OK 提取${report.factsExtracted} ADD${report.added.length} ` +
@@ -717,6 +721,9 @@ export function apply(ctx, config) {
 		} catch (error) {
 			// ollamaOk 只反映本地 ollama（embed/召回通道）：dsh 云端路由的失败与它无关
 			if (chatRoute() === 'local') ollamaOk = false;
+			writeHealth.failAt = Date.now();
+			writeHealth.failures += 1;
+			writeHealth.lastError = errorMessage(error);
 			void debugLog(`remember FAILED: ${errorMessage(error)}`);
 			if (liveConfig.retryQueue !== false) {
 				try {
@@ -944,7 +951,9 @@ export function apply(ctx, config) {
 						const removed = await backend.forget(arg);
 						await refreshHot();
 						if (!removed.length) return { kind: 'success', text: `没有匹配 "${arg}" 的卡片` };
-						const lines = removed.map((card) => `- ${card.content.slice(0, 40)}`);
+						// A3（A4 审计修正）：slice(0,40) 会劈开 emoji 代理对 → 命令结果进历史后
+						// JSON 化出非法码元，服务端可能拒整条请求。改用不劈代理对的安全截断。
+						const lines = removed.map((card) => `- ${truncateSafe(card.content, 40)}`);
 						return { kind: 'success', text: `已删除 ${removed.length} 张卡片（进 cold 归档，可 /memory cold 找回）：\n${lines.join('\n')}` };
 					}
 					if (verb === 'list' || verb === 'cards') {
@@ -967,9 +976,28 @@ export function apply(ctx, config) {
 					const health = backend.kind === 'local'
 						? (ollamaOk === false ? '⚠️ ollama 离线（召回不可用）' : '✅ ollama 在线')
 						: '✅ python 后端';
+					// C3（契约 I5）：三项「记忆可能没记住」的信号，此前只躺在 debug.log 里。
+					// 只在有问题时输出，正常情况一个字都不加（状态面板不该变啰嗦）。
+					const warnings = [];
+					if (writeHealth.failures > 0) {
+						const agoMin = Math.max(0, Math.round((Date.now() - writeHealth.failAt) / 60000));
+						warnings.push(`⚠️ 写入失败 ${writeHealth.failures} 次（最近 ${agoMin} 分钟前）：${truncateSafe(writeHealth.lastError, 80)}`);
+					}
+					try {
+						const queued = await loadRetryQueue(retryPath);
+						if (queued.length > 0) warnings.push(`⚠️ 重试队列待重放 ${queued.length} 个对话窗`);
+					} catch {
+						/* 队列读不到不影响状态输出 */
+					}
+					const liveStore = backend.engine?.store;
+					if (liveStore) {
+						const noVec = liveStore.all().filter((c) => !Array.isArray(c.embedding) || c.embedding.length === 0).length;
+						if (noVec > 0) warnings.push(`⚠️ ${noVec} 张卡缺向量（只能字面召回，语义检索找不到）`);
+					}
+					const warningText = warnings.length > 0 ? `\n${warnings.join('\n')}` : '';
 					return {
 						kind: 'success',
-						text: `后端：${backend.kind} ｜ 写入模型：${routeText} ｜ ${health}\n${JSON.stringify(status)}\n\n${hotText}`
+						text: `后端：${backend.kind} ｜ 写入模型：${routeText} ｜ ${health}\n${JSON.stringify(status)}${warningText}\n\n${hotText}`
 					};
 				} catch (error) {
 					return { kind: 'error', text: `记忆操作失败：${errorMessage(error)}` };
