@@ -17,9 +17,9 @@
 
 | 项 | 读数 | 测法 |
 |---|---|---|
-| 版本 | 发布仓 `0.6.1`；本机工作副本 `0.6.0`（`profiles/plugins/dsh-memory`） | 各自 `package.json` |
-| 代码量 | `index.js` 55,187 B ／ `client.js` 37,445 B ／ `lib/` 14 个模块合计约 2,150 行 | `Get-ChildItem` + 行数统计 |
-| 测试 | **smoke 49 / 49**、**client-smoke 9 / 9** 通过；`apply-stub` 未跑通（需同级 `dsh-api-stable`，属环境前提非代码缺陷） | `node test/smoke.test.mjs`、`node test/client-smoke.test.mjs`（**直接跑文件**；`node --test` 在受限沙箱里 spawn 会 EPERM） |
+| 版本 | `0.7.0`（发布仓与工作副本同版；v0.7.0 = A 组注入面加固） | 各自 `package.json` |
+| 代码量 | `index.js` 55,187 B ／ `client.js` 37,445 B ／ `lib/` 14 个模块合计约 2,150 行（v0.7.0 起另有 `lib/prompt-safety.js`，约 8.7 KB） | `Get-ChildItem` + 行数统计 |
+| 测试 | **smoke 49 / 49**、**injection-surface 22 / 22**、**client-smoke 9 / 9** 通过；`apply-stub` 在插件目录内跑通（`APPLY STUB OK`），在单仓 oss 目录内因缺同级 `dsh-api-stable` 跑不通 | `node test/smoke.test.mjs`、`node test/injection-surface.test.mjs`、`node test/client-smoke.test.mjs`（**直接跑文件**；`node --test` 在受限沙箱里 spawn 会 EPERM） |
 | 卡片数 | 340 张 | `data/cards.json` → `cards.length` |
 | 增速 | 约 **20 张/天**（近 12 天 256 张） | 按 `createdAt` 分组 |
 | cards.json | **7.34 MB** | 文件字节数 |

@@ -33,6 +33,8 @@ import { classifySession, isUsefulLine, senderIdsOf } from './lib/im.js';
 import { setSelfNames } from './lib/ingest.js';
 import { makeChatFn, makeDshChatFn, makeEmbedFn, probeOllama } from './lib/llm.js';
 import { collectModelCatalog, parseRuntimeList } from './lib/model-catalog.js';
+// 注入面净化（施工清单 A1/A2）：只在出口改写注入副本，真源不动。见 lib/prompt-safety.js 头注。
+import { buildRecallText, sanitizeForContext } from './lib/prompt-safety.js';
 import { drainRetryQueue, enqueueRetry, loadRetryQueue, saveRetryQueue } from './lib/retry.js';
 import { GENERAL_WORKSPACE, resolveWorkspaceKey } from './lib/workspace.js';
 
@@ -670,7 +672,11 @@ export function apply(ctx, config) {
 				order: 1000,
 				// v0.6.0：assemble 上下文带 agent（dsh-agent assembleContextFor 约定
 				// {agent, scope: agent}），从 agent.session.header.cwd 按会话渲染热块
-				text: (asm) => hotTextFor(asm?.agent)
+				// v0.7.0（A1）：**必须过 sanitizeForContext** —— 宿主 renderPrompt 会对每段
+				// context 文本做严格 `{{var}}` 插值，完整组一律 throw（无转义语法）。热块正文
+				// 来自卡片内容，任意文本都可能含 `{{…}}`（docker --format / Jinja / Vue 模板…），
+				// 一旦命中则该轮 assemble 抛错，而热块每轮重建 ⇒ 会话永久不可用，只能改/删卡恢复。
+				text: (asm) => sanitizeForContext(hotTextFor(asm?.agent))
 			});
 		});
 	} else {
@@ -1025,13 +1031,15 @@ function memoryNotice(hits) {
 		const relTag = rel >= 0.01 ? `相关${rel.toFixed(2)}` : `字面${Number(hit.bm25 ?? 0).toFixed(2)}`;
 		return `- [${hit.card.category} 重要${Number(hit.card.importance).toFixed(2)} ${relTag}${when}] ${hit.card.content}`;
 	});
-	const text = [
-		'[memory recall] 根据用户当前消息，从长期记忆库中检索到以下内容（按匹配度排序）：',
-		...lines,
-		'（以上是历史记忆，仅供参考；与当前语境无关时请忽略）',
-		// A2 闭合围栏：与首行 [memory recall] 成对，历史查重按"围栏块全文相等"判定
-		'[/memory recall]'
-	].join('\n');
+	const text = buildRecallText({
+		header: '[memory recall] 根据用户当前消息，从长期记忆库中检索到以下内容（按匹配度排序）：',
+		lines,
+		footer: [
+			'（以上是历史记忆，仅供参考；与当前语境无关时请忽略）',
+			// A2 闭合围栏：与首行 [memory recall] 成对，历史查重按"围栏块全文相等"判定
+			'[/memory recall]'
+		]
+	});
 	return createUserMessage({
 		content: [{ type: 'text', text }],
 		source: {

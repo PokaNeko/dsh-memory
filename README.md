@@ -163,13 +163,14 @@ ADD / UPDATE / DELETE / NONE；执行是纯代码，可审计、可回放。
 ## 测试
 
 ```bash
-node test/smoke.test.mjs           # 49 项：召回/写入/分层/GC/导出/工作区/IM 等核心机制（假向量 + 假 LLM）
-node test/client-smoke.test.mjs    # 9 项：设置页渲染与模型列表逻辑
-node test/apply-stub/run.mjs       # apply() 链路：桩宿主 + 桩 schemastery，验证注册与钩子不炸
-node test/live-smoke.mjs           # 端到端（需要真 ollama + bge-m3）
+node test/smoke.test.mjs               # 49 项：召回/写入/分层/GC/导出/工作区/IM 等核心机制（假向量 + 假 LLM）
+node test/injection-surface.test.mjs   # 22 项：注入面净化守卫（{{ 打断 / 不可信边界 / 真源不被污染 / 接线）
+node test/client-smoke.test.mjs        # 9 项：设置页渲染与模型列表逻辑
+node test/apply-stub/run.mjs           # apply() 链路：桩宿主 + 桩 schemastery，验证注册与钩子不炸
+node test/live-smoke.mjs               # 端到端（需要真 ollama + bge-m3）
 ```
 
-前三个既不需要 ollama，也不需要装 dsh —— `apply-stub` 自带 `stubs/` 把宿主包换成本地桩
+前四个既不需要 ollama，也不需要装 dsh —— `apply-stub` 自带 `stubs/` 把宿主包换成本地桩
 （唯一前提是同级的 `dsh-api-stable` 在位）。只有 `live-smoke.mjs` 会真的调模型。
 
 > 工程侧文档（不变量、施工清单、基线读数）在 [`docs/`](docs/README.md)。要改注入路径或存储层
@@ -183,15 +184,15 @@ node test/live-smoke.mjs           # 端到端（需要真 ollama + bge-m3）
 - `python` 后端缺 diag 出参、export、list 与已注入降权，仅作备用。
 - 群聊目前按单桶 `im` 域，per-group 细分还在观察（`im-group` 埋点已就位）。
 - 4B 级本地模型的提取质量明显不如云端；写入频繁的话建议 `chatRoute: dsh` 借一个 flash 级云端模型。
-- **注入面待加固（已知缺陷，见 [契约 I1/I2](docs/注入面契约.md)）**：hot 块进系统提示时未对 `{{…}}` 做打断，
-  而宿主模板对完整组一律抛错——若某张卡正文里出现 `{{name}}` 这类文本，该会话会每轮失败、
-  只能改卡或删卡恢复。当前 340 张卡中尚无命中，但缺守卫测试。修复排期见
-  [施工清单 A 组](docs/施工清单-20261112-注入面与真源.md)。
+- 注入面（v0.7.0 已加固）：hot 块出口会打断 `{{…}}`（宿主模板对完整组一律抛错，否则该会话每轮
+  失败），召回块会带 `<untrusted-memory>` 边界与声明。守卫见 `test/injection-surface.test.mjs`；
+  残留风险与取舍写在 [契约 §7](docs/注入面契约.md)。
 
 ## 版本史
 
 | 版本 | 要点 |
 |---|---|
+| v0.7.0 | 注入面加固（A 组）：hot 块出口 `{{` 打断 + 孤立代理清理（宿主模板对完整 `{{x}}` 组抛错，命中即会话永久失败）；召回块加 `<untrusted-memory>` 边界与声明句，载荷内伪造的边界标记（含全角/零宽/实体变体）先被打断；新增 `lib/prompt-safety.js` 与 22 项守卫测试 |
 | v0.6.1 | 开源整理：IM 本人昵称由硬编码改为 `imSelfNames` 配置项；补齐 `apply-stub` 测试（桩 schemastery + 桩宿主 `inject`）；新增 `ws-map` 示例与本 README |
 | v0.6.0 | 工作区分离：`ws` 标签 + LLM 判 general + 召回/热块分区过滤 + 热层分组装配 + 存量卡一次性归类 |
 | v0.5.0 | 跨轮冷却 + 逃生门 / 围栏 + 查重 / 提取只信原文 / 游标增量 / 热块硬预算 / 绝对日期 / 已注入降权 |
