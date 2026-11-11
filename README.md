@@ -164,7 +164,7 @@ ADD / UPDATE / DELETE / NONE；执行是纯代码，可审计、可回放。
 
 ```bash
 node test/smoke.test.mjs               # 49 项：召回/写入/分层/GC/导出/工作区/IM 等核心机制（假向量 + 假 LLM）
-node test/injection-surface.test.mjs   # 22 项：注入面净化守卫（{{ 打断 / 不可信边界 / 真源不被污染 / 接线）
+node test/injection-surface.test.mjs   # 24 项：注入面净化守卫（{{ 打断 / 不可信边界 / 真源不被污染 / 接线）
 node test/client-smoke.test.mjs        # 9 项：设置页渲染与模型列表逻辑
 node test/apply-stub/run.mjs           # apply() 链路：桩宿主 + 桩 schemastery，验证注册与钩子不炸
 node test/live-smoke.mjs               # 端到端（需要真 ollama + bge-m3）
@@ -192,7 +192,7 @@ node test/live-smoke.mjs               # 端到端（需要真 ollama + bge-m3�
 
 | 版本 | 要点 |
 |---|---|
-| v0.7.0 | 注入面加固（A 组）：hot 块出口 `{{` 打断 + 孤立代理清理（宿主模板对完整 `{{x}}` 组抛错，命中即会话永久失败）；召回块加 `<untrusted-memory>` 边界与声明句，载荷内伪造的边界标记（含全角/零宽/实体变体）先被打断；新增 `lib/prompt-safety.js` 与 22 项守卫测试 |
+| v0.7.0 | 注入面加固（A 组）：hot 块出口 `{{` 打断 + 孤立代理清理（宿主模板对完整 `{{x}}` 组抛错，命中即会话永久失败）；召回块加 `<untrusted-memory>` 边界与声明句，载荷内伪造的边界标记（含全角/零宽/实体变体）先被打断；新增 `lib/prompt-safety.js` 与 24 项守卫测试；hot 块同时套不可信边界 |
 | v0.6.1 | 开源整理：IM 本人昵称由硬编码改为 `imSelfNames` 配置项；补齐 `apply-stub` 测试（桩 schemastery + 桩宿主 `inject`）；新增 `ws-map` 示例与本 README |
 | v0.6.0 | 工作区分离：`ws` 标签 + LLM 判 general + 召回/热块分区过滤 + 热层分组装配 + 存量卡一次性归类 |
 | v0.5.0 | 跨轮冷却 + 逃生门 / 围栏 + 查重 / 提取只信原文 / 游标增量 / 热块硬预算 / 绝对日期 / 已注入降权 |

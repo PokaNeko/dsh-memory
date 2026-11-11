@@ -24,6 +24,7 @@ import {
 	buildRecallText,
 	escapePromptBraces,
 	neutralizeBoundary,
+	renderUntrustedBlock,
 	sanitizeForContext,
 	stripLoneSurrogates
 } from '../lib/prompt-safety.js';
@@ -172,6 +173,22 @@ test('A1 接线：hot 块必须经过 sanitizeForContext', () => {
 test('A2 接线：召回正文必须由 buildRecallText 组装', () => {
 	const source = readFileSync(join(ROOT, 'index.js'), 'utf8');
 	assert.ok(source.includes('buildRecallText({'), '召回通知没走统一组装函数');
+});
+
+test('A2 接线：hot 块必须同时过净化与边界（只净化不设界 = 数据摆在指令位）', () => {
+	const source = readFileSync(join(ROOT, 'index.js'), 'utf8');
+	assert.ok(
+		source.includes('renderUntrustedBlock(sanitizeForContext(hotTextFor('),
+		'hot 块缺不可信边界'
+	);
+});
+
+test('A2 hot 块成品：边界恰好一对，声明句在开界之前', () => {
+	const text = renderUntrustedBlock(sanitizeForContext('[长期记忆]（空）'));
+	assert.equal(count(text, UNTRUSTED_OPEN), 1);
+	assert.equal(count(text, UNTRUSTED_CLOSE), 1);
+	assert.ok(text.indexOf(UNTRUSTED_NOTICE) < text.indexOf(UNTRUSTED_OPEN));
+	assert.ok(text.includes('[长期记忆]'), '热块正文丢了');
 });
 
 test('A2 接线：neutralizeBoundary 的覆盖集合不为空（防被误删成直通）', () => {

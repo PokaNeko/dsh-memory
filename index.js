@@ -34,7 +34,7 @@ import { setSelfNames } from './lib/ingest.js';
 import { makeChatFn, makeDshChatFn, makeEmbedFn, probeOllama } from './lib/llm.js';
 import { collectModelCatalog, parseRuntimeList } from './lib/model-catalog.js';
 // 注入面净化（施工清单 A1/A2）：只在出口改写注入副本，真源不动。见 lib/prompt-safety.js 头注。
-import { buildRecallText, sanitizeForContext } from './lib/prompt-safety.js';
+import { buildRecallText, renderUntrustedBlock, sanitizeForContext } from './lib/prompt-safety.js';
 import { drainRetryQueue, enqueueRetry, loadRetryQueue, saveRetryQueue } from './lib/retry.js';
 import { GENERAL_WORKSPACE, resolveWorkspaceKey } from './lib/workspace.js';
 
@@ -676,7 +676,9 @@ export function apply(ctx, config) {
 				// context 文本做严格 `{{var}}` 插值，完整组一律 throw（无转义语法）。热块正文
 				// 来自卡片内容，任意文本都可能含 `{{…}}`（docker --format / Jinja / Vue 模板…），
 				// 一旦命中则该轮 assemble 抛错，而热块每轮重建 ⇒ 会话永久不可用，只能改/删卡恢复。
-				text: (asm) => sanitizeForContext(hotTextFor(asm?.agent))
+				// v0.7.0（A2）：再套不可信边界 —— 热块是体积最大的注入面（近 2000 字全是
+				// 用户/工具/群聊沉淀的可控文本），只净化不设界等于把数据摆在指令位上。
+				text: (asm) => renderUntrustedBlock(sanitizeForContext(hotTextFor(asm?.agent)))
 			});
 		});
 	} else {
