@@ -18,9 +18,9 @@
 
 | 项 | 读数 | 测法 |
 |---|---|---|
-| 版本 | `0.8.0`（发布仓与工作副本同版；v0.7.0 = A 组注入面加固，v0.8.0 = C 组写入语义 + A3 修正） | 各自 `package.json` |
+| 版本 | `0.9.0`（发布仓与工作副本同版；v0.7.0 = A 组注入面，v0.8.0 = C 组写入语义 + A3 修正，v0.9.0 = A6/A7 写入面与查询面边界） | 各自 `package.json` |
 | 代码量 | `index.js` 55,187 B ／ `client.js` 37,445 B ／ `lib/` 14 个模块合计约 2,150 行（v0.7.0 起另有 `lib/prompt-safety.js`，约 8.7 KB） | `Get-ChildItem` + 行数统计 |
-| 测试 | 工作副本合计 **94 项全绿**：smoke 49 / injection-surface 24 / write-semantics 12 / client-smoke 9，另 `apply-stub` → `APPLY STUB OK`。**公开仓单目录只能跑 injection-surface 24 + client-smoke 9**——smoke / write-semantics / apply-stub 经 `lib/llm.js` 依赖宿主包 `@deepseek-ai/dsh-llm`，需同级 `dsh-api-stable` 与宿主 `node_modules` 在位 | `node test/smoke.test.mjs`、`node test/injection-surface.test.mjs`、`node test/client-smoke.test.mjs`（**直接跑文件**；`node --test` 在受限沙箱里 spawn 会 EPERM） |
+| 测试 | 工作副本合计 **110 项全绿**：smoke 49 / injection-surface 24 / write-semantics 12 / write-boundary 16 / client-smoke 9，另 `apply-stub` → `APPLY STUB OK`。**公开仓单目录只能跑 injection-surface 24 + client-smoke 9**——smoke / write-semantics / write-boundary / apply-stub 经 `lib/llm.js` 依赖宿主包 `@deepseek-ai/dsh-llm`，需同级 `dsh-api-stable` 与宿主 `node_modules` 在位 | `node test/smoke.test.mjs`、`node test/injection-surface.test.mjs`、`node test/client-smoke.test.mjs`（**直接跑文件**；`node --test` 在受限沙箱里 spawn 会 EPERM） |
 | 卡片数 | 340 张 | `data/cards.json` → `cards.length` |
 | 增速 | 约 **20 张/天**（近 12 天 256 张） | 按 `createdAt` 分组 |
 | cards.json | **7.34 MB** | 文件字节数 |

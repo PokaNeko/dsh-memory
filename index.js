@@ -34,7 +34,7 @@ import { setSelfNames } from './lib/ingest.js';
 import { makeChatFn, makeDshChatFn, makeEmbedFn, probeOllama } from './lib/llm.js';
 import { collectModelCatalog, parseRuntimeList } from './lib/model-catalog.js';
 // 注入面净化（施工清单 A1/A2）：只在出口改写注入副本，真源不动。见 lib/prompt-safety.js 头注。
-import { buildRecallText, renderUntrustedBlock, sanitizeForContext, truncateSafe } from './lib/prompt-safety.js';
+import { buildRecallText, QUERY_NOTICE, renderUntrustedBlock, sanitizeForContext, stripLoneSurrogates, truncateSafe } from './lib/prompt-safety.js';
 import { drainRetryQueue, enqueueRetry, loadRetryQueue, saveRetryQueue } from './lib/retry.js';
 import { GENERAL_WORKSPACE, resolveWorkspaceKey } from './lib/workspace.js';
 
@@ -918,8 +918,9 @@ export function apply(ctx, config) {
 						if (!arg) return { kind: 'error', text: '用法：/memory recall <查询>' };
 						const hits = await backend.recall(arg, 5);
 						if (!hits.length) return { kind: 'success', text: '（没有命中记忆）' };
-						const lines = hits.map((h) => `- [${h.card.category} 重要${h.card.importance.toFixed(2)}] ${h.card.content}`);
-						return { kind: 'success', text: `召回结果：\n${lines.join('\n')}` };
+						// A7：查询面也是模型可见面——加一行「数据非指令」声明；正文清孤立代理。
+						const lines = hits.map((h) => `- [${h.card.category} 重要${h.card.importance.toFixed(2)}] ${stripLoneSurrogates(h.card.content)}`);
+						return { kind: 'success', text: `${QUERY_NOTICE}\n召回结果：\n${lines.join('\n')}` };
 					}
 					if (verb === 'remember') {
 						if (!arg) return { kind: 'error', text: '用法：/memory remember <要记住的内容>' };
@@ -944,7 +945,7 @@ export function apply(ctx, config) {
 					}
 					if (verb === 'cold') {
 						const text = await backend.searchCold(arg);
-						return { kind: 'success', text: text || `（冷层没有匹配 "${arg}" 的条目）` };
+						return { kind: 'success', text: text ? `${QUERY_NOTICE}\n${stripLoneSurrogates(text)}` : `（冷层没有匹配 "${arg}" 的条目）` };
 					}
 					if (verb === 'forget') {
 						if (!arg) return { kind: 'error', text: '用法：/memory forget <关键词或卡片id>（软删，进 cold 归档）' };
@@ -954,7 +955,7 @@ export function apply(ctx, config) {
 						// A3（A4 审计修正）：slice(0,40) 会劈开 emoji 代理对 → 命令结果进历史后
 						// JSON 化出非法码元，服务端可能拒整条请求。改用不劈代理对的安全截断。
 						const lines = removed.map((card) => `- ${truncateSafe(card.content, 40)}`);
-						return { kind: 'success', text: `已删除 ${removed.length} 张卡片（进 cold 归档，可 /memory cold 找回）：\n${lines.join('\n')}` };
+						return { kind: 'success', text: `${QUERY_NOTICE}\n已删除 ${removed.length} 张卡片（进 cold 归档，可 /memory cold 找回）：\n${lines.join('\n')}` };
 					}
 					if (verb === 'list' || verb === 'cards') {
 						if (typeof backend.listCards !== 'function') {
@@ -964,9 +965,9 @@ export function apply(ctx, config) {
 						if (!cards.length) return { kind: 'success', text: '（记忆库为空）' };
 						const tierTag = { hot: '🔥', warm: '🌤️', cold: '❄️' };
 						const lines = cards.map(
-							(c) => `${tierTag[c.tier] ?? '·'} [${String(c.id).slice(-4)}]${c.ws && c.ws !== '*' ? ` @${c.ws}` : ''} 重要${Number(c.importance).toFixed(2)} ${c.content}`
+							(c) => `${tierTag[c.tier] ?? '·'} [${String(c.id).slice(-4)}]${c.ws && c.ws !== '*' ? ` @${c.ws}` : ''} 重要${Number(c.importance).toFixed(2)} ${stripLoneSurrogates(c.content)}`
 						);
-						return { kind: 'success', text: `记忆库共 ${cards.length} 张活跃卡片：\n${lines.join('\n')}` };
+						return { kind: 'success', text: `${QUERY_NOTICE}\n记忆库共 ${cards.length} 张活跃卡片：\n${lines.join('\n')}` };
 					}
 					// 无参数/未知：显示状态
 					const status = await backend.status();
@@ -997,7 +998,7 @@ export function apply(ctx, config) {
 					const warningText = warnings.length > 0 ? `\n${warnings.join('\n')}` : '';
 					return {
 						kind: 'success',
-						text: `后端：${backend.kind} ｜ 写入模型：${routeText} ｜ ${health}\n${JSON.stringify(status)}${warningText}\n\n${hotText}`
+						text: `后端：${backend.kind} ｜ 写入模型：${routeText} ｜ ${health}\n${JSON.stringify(status)}${warningText}\n\n${renderUntrustedBlock(sanitizeForContext(hotText))}`
 					};
 				} catch (error) {
 					return { kind: 'error', text: `记忆操作失败：${errorMessage(error)}` };

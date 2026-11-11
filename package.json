@@ -1,6 +1,6 @@
 {
   "name": "dsh-memory",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "dsh 长期记忆插件：mem0 式事件化写入 + NAMS 式权重闭环 + Letta 式限额热层 + 工作区记忆分离，local（TS 一体化）/ python（HTTP 桥）双后端可切换",
   "type": "module",
   "main": "./index.js",

@@ -166,6 +166,7 @@ ADD / UPDATE / DELETE / NONE；执行是纯代码，可审计、可回放。
 node test/smoke.test.mjs               # 49 项：召回/写入/分层/GC/导出/工作区/IM 等核心机制（假向量 + 假 LLM）
 node test/injection-surface.test.mjs   # 24 项：注入面净化守卫（{{ 打断 / 不可信边界 / 真源不被污染 / 接线）
 node test/write-semantics.test.mjs     # 12 项：写入语义守卫（落盘判据 / 嵌入齐备 / 重试幂等 / 安全截断）
+node test/write-boundary.test.mjs      # 16 项：写入面边界 + 查询面声明（含端到端提示词接线与 $ 替换模式守卫）
 node test/client-smoke.test.mjs        # 9 项：设置页渲染与模型列表逻辑
 node test/apply-stub/run.mjs           # apply() 链路：桩宿主 + 桩 schemastery，验证注册与钩子不炸
 node test/live-smoke.mjs               # 端到端（需要真 ollama + bge-m3）
@@ -193,6 +194,7 @@ node test/live-smoke.mjs               # 端到端（需要真 ollama + bge-m3�
 
 | 版本 | 要点 |
 |---|---|
+| v0.9.0 | 写入面与查询面边界（A6/A7）：提取（桌面/群聊）与决策提示词的对话素材统一包 `<untrusted-dialog>` + 「数据非指令」声明，调优标准零改动；修 `String.replace` 字符串形式的 **$ 替换模式展开**漏洞（群友可借此把提示词前文复制进素材），三处改函数形式；`/memory recall / list / cold / forget` 四处加一行声明并清孤立代理；状态面板热块改用与系统提示同一套边界 |
 | v0.8.0 | 写入语义（C 组）：`save()` 落盘后校验字节数 + 读回尾部（失败即抛，交重试队列，不再「rename 完就当成功」）；嵌入返回不齐备时整批不写，杜绝「没有向量的半残卡」；`/memory` 状态新增三项告警（写入失败次数 / 重试队列深度 / 缺向量卡数）。另修 A3：`/memory forget` 回显改用不劈代理对的安全截断 |
 | v0.7.0 | 注入面加固（A 组）：hot 块出口 `{{` 打断 + 孤立代理清理（宿主模板对完整 `{{x}}` 组抛错，命中即会话永久失败）；召回块加 `<untrusted-memory>` 边界与声明句，载荷内伪造的边界标记（含全角/零宽/实体变体）先被打断；新增 `lib/prompt-safety.js` 与 24 项守卫测试；hot 块同时套不可信边界 |
 | v0.6.1 | 开源整理：IM 本人昵称由硬编码改为 `imSelfNames` 配置项；补齐 `apply-stub` 测试（桩 schemastery + 桩宿主 `inject`）；新增 `ws-map` 示例与本 README |
