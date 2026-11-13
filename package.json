@@ -1,7 +1,8 @@
 {
   "name": "dsh-memory",
-  "version": "0.9.0",
-  "description": "dsh 长期记忆插件：mem0 式事件化写入 + NAMS 式权重闭环 + Letta 式限额热层 + 工作区记忆分离，local（TS 一体化）/ python（HTTP 桥）双后端可切换",
+  "version": "1.0.0",
+  "private": true,
+  "description": "长期记忆插件：mem0 式事件化写入 + NAMS 式权重闭环 + Letta 式限额热层 + 工作区分离（v0.6.0）+ 注入面加固（v0.7.0）+ 写入语义校验（v0.8.0）+ 写入面/查询面不可信边界（v0.9.0）+ dream 离线整理/密钥闸/脏度门控（v1.0.0），local（TS 一体化）/ python（HTTP 桥）双后端可切换",
   "type": "module",
   "main": "./index.js",
   "exports": {
@@ -20,33 +21,7 @@
     "index.js",
     "client.js",
     "lib/*.js",
-    "scripts/*.mjs",
-    "scripts/*.example.json"
+    "data/.gitkeep"
   ],
-  "scripts": {
-    "test": "node test/smoke.test.mjs && node test/client-smoke.test.mjs && node test/apply-stub/run.mjs",
-    "test:live": "node test/live-smoke.mjs"
-  },
-  "keywords": [
-    "dsh",
-    "deepseek-harness",
-    "plugin",
-    "long-term-memory",
-    "memory",
-    "ollama",
-    "rag"
-  ],
-  "author": "Poka",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/PokaNeko/dsh-memory.git"
-  },
-  "bugs": {
-    "url": "https://github.com/PokaNeko/dsh-memory/issues"
-  },
-  "homepage": "https://github.com/PokaNeko/dsh-memory#readme",
-  "engines": {
-    "node": ">=22"
-  }
+  "license": "MIT"
 }

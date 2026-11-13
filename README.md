@@ -14,6 +14,8 @@
 
 - **自动召回**：按用户这句话检索相关记忆，作为 `[memory recall]` 块注入本轮
 - **自动写入**：轮末从对话里提炼事实（粗粒度主题卡优先，宁少勿滥），两步 LLM 决策后落库
+- **dream 离线整理**（v1.0.0）：维护期批量合并/拆分杂卡——LLM 只出提案，运行时校验后确定性执行，失败整批回滚
+- **写入三道闸**（v1.0.0）：密钥扫描（凭据特征拒写）、字符预算（超限重压缩/截断）、注入副本新鲜度标注（"N天前" + 时点告诫）
 - **两级存储**：hot（常驻系统提示，有字符预算）/ cold（归档，`/memory cold` 可翻）
 - **混合检索**：余弦语义（bge-m3）+ BM25 字面（中文二元组，零分词依赖），RRF 融合
 - **工作区隔离**：个人偏好处处可见，项目进展只在对应目录的会话里出现
@@ -84,14 +86,19 @@ git clone https://github.com/PokaNeko/dsh-memory.git
 | `wRelevance` / `wImportance` / `wFreshness` | `0.5/0.3/0.2` | 排序三权重，建议合计 ≈1 |
 | `autoRemember` | `true` | 轮末自动提炼写入 |
 | `rememberThrottleSeconds` | `45` | 桌面会话两次写入的最小间隔 |
-| `imSelfNames` | `''` | **你在 IM 里的昵称**（逗号分隔，如 `小明,阿鱼`）。群聊里这些名字视为"用户本人"，其余按群友记；留空则只认消息里自称"我" |
+| `imSelfNames` | `''` | **你在 IM 里的昵称**（逗号分隔，如 `小明,阿鱼`）。群聊里这些名字视为"用户本人"，其余按群友记；留空 = 默认按 `PokaNeko` 识别 |
 | `imRememberMode` | `group` | IM 写入模式：`off` / `pinned-only`（只记显式 remember）/ `group`（攒批提炼） |
+| `secretScan` | `true` | 写入面密钥扫描：提取产物命中凭据特征（云 AK/SK、GitHub PAT、私钥头等）整条拒写 |
+| `writeBudget` | `true` | 写入预算：单卡超 1200 字打回 LLM 重压缩一次，仍超安全截断 |
+| `dreamManifest` / `dreamDryRun` | `true` / `true` | dream 离线整理；干跑模式只出提案不执行，验收提案质量后关掉才真正自动合并 |
+| `dirtyGate` / `dirtyThreshold` | `true` / `20` | 脏度门控：库没有新写入时维护期跳过 LLM 步，不烧 token |
+| `noopSkip` | `false` | 提取节奏：连续零产出时跳过提取（连跳上限 3 轮、窗口满即恢复）；默认关 |
 | `wsIsolation` | `true` | 工作区记忆分离 |
 | `exportDir` | `''` | 记忆快照导出目录，留空 = 不导出 |
 | `debug` | `false` | `data/debug.log` 里记写入/维护明细（召回结论始终记录） |
 
 > `imSelfNames` 是给 QQ/微信桥用的。群聊里 `user` 消息带 `[名字 (ID)]` 身份前缀，插件靠它区分
-> "你"和"群友"。不填也不会出错，只是你自己在群里的发言会被当成群友事实。
+> "你"和"群友"。留空默认按 `PokaNeko` 识别；昵称不同就填上，否则你自己在群里的发言会被当成群友事实。
 
 ## 工作方式
 
@@ -140,6 +147,7 @@ ADD / UPDATE / DELETE / NONE；执行是纯代码，可审计、可回放。
 /memory remember <内容>     显式记住（重要度 ≥0.8）
 /memory forget <词|id>      软删入归档
 /memory maintenance        手动维护（衰减/合并/清理/备份）
+/memory merge [--apply]    dream 整理提案（默认干跑只看提案；--apply 才执行）
 /memory cold <q>           翻归档
 /memory export             导出快照
 ```
@@ -163,17 +171,19 @@ ADD / UPDATE / DELETE / NONE；执行是纯代码，可审计、可回放。
 ## 测试
 
 ```bash
-node test/smoke.test.mjs               # 49 项：召回/写入/分层/GC/导出/工作区/IM 等核心机制（假向量 + 假 LLM）
-node test/injection-surface.test.mjs   # 24 项：注入面净化守卫（{{ 打断 / 不可信边界 / 真源不被污染 / 接线）
-node test/write-semantics.test.mjs     # 12 项：写入语义守卫（落盘判据 / 嵌入齐备 / 重试幂等 / 安全截断）
-node test/write-boundary.test.mjs      # 16 项：写入面边界 + 查询面声明（含端到端提示词接线与 $ 替换模式守卫）
-node test/client-smoke.test.mjs        # 9 项：设置页渲染与模型列表逻辑
+# 核心五套：先注册宿主包解析桩（不需要装 dsh / ollama），再跑对应套件
+node --import ./test/apply-stub/register.mjs test/smoke.test.mjs              # 49 项：召回/写入/分层/GC/导出/工作区/IM 等核心机制（假向量 + 假 LLM）
+node --import ./test/apply-stub/register.mjs test/injection-surface.test.mjs  # 24 项：注入面净化守卫（{{ 打断 / 不可信边界 / 真源不被污染 / 接线）
+node --import ./test/apply-stub/register.mjs test/write-semantics.test.mjs    # 12 项：写入语义守卫（落盘判据 / 嵌入齐备 / 重试幂等 / 安全截断）
+node --import ./test/apply-stub/register.mjs test/write-boundary.test.mjs     # 17 项：写入面边界 + 查询面声明（含端到端提示词接线、$ 替换模式守卫与 imSelfNames 切换）
+node --import ./test/apply-stub/register.mjs test/dream.test.mjs              # 27 项：dream 组守卫（密钥闸 / 预算 / 词表 / 清单协议 / 快照回滚 / 脏度门控 / 提取节奏）
+node test/client-smoke.test.mjs        # 9 项：设置页渲染与模型列表逻辑（需 React 环境）
 node test/apply-stub/run.mjs           # apply() 链路：桩宿主 + 桩 schemastery，验证注册与钩子不炸
 node test/live-smoke.mjs               # 端到端（需要真 ollama + bge-m3）
 ```
 
-前四个既不需要 ollama，也不需要装 dsh —— `apply-stub` 自带 `stubs/` 把宿主包换成本地桩
-（唯一前提是同级的 `dsh-api-stable` 在位）。只有 `live-smoke.mjs` 会真的调模型。
+核心五套既不需要 ollama，也不需要装 dsh —— `apply-stub` 自带 `stubs/` 把宿主包换成本地桩，
+`register.mjs` 负责挂上解析钩子（唯一前提是同级的 `dsh-api-stable` 在位）。只有 `live-smoke.mjs` 会真的调模型。
 
 > 工程侧文档（不变量、施工清单、基线读数）在 [`docs/`](docs/README.md)。要改注入路径或存储层
 > 之前，先读 [注入面契约](docs/注入面契约.md) 的 I1–I7。
@@ -194,6 +204,7 @@ node test/live-smoke.mjs               # 端到端（需要真 ollama + bge-m3�
 
 | 版本 | 要点 |
 |---|---|
+| v1.0.0 | dream 组（qwen-code 借鉴，十件）：写入面密钥扫描（11 条凭据特征，命中整条拒写）；写入预算（单卡 1200 字超限打回重压缩、仍超安全截断；召回块 2000 字按名次裁）；新鲜度人话注入（"N天前" + 时点告诫，只改注入副本）；提取词表对齐库内高频词；dream 离线整理（批量 dedupe/split 清单协议：LLM 只提案、运行时校验违规整单作废、先归档后生效、`/memory merge [--apply]`）；快照事后校验（按库实际状态 diff，计划外改动整批回滚）；执行预算（≤2 次提案调用 + 90s 超时）；脏度门控（无新写入维护期跳过 LLM 步）；提取 noop 节奏（默认关）。新增 `lib/dream.js` 与 27 项守卫测试；补全 v0.6.1 `imSelfNames`（实现 `setSelfNames`：群聊身份段 / 决策人称换算 / 别名归一随配置切换，缺省保持 PokaNeko——修复仓库 index.js 自 v0.6.1 起的悬空导入）；移除实机临时诊断包装；测试入口统一 `register.mjs` 桩注册 |
 | v0.9.0 | 写入面与查询面边界（A6/A7）：提取（桌面/群聊）与决策提示词的对话素材统一包 `<untrusted-dialog>` + 「数据非指令」声明，调优标准零改动；修 `String.replace` 字符串形式的 **$ 替换模式展开**漏洞（群友可借此把提示词前文复制进素材），三处改函数形式；`/memory recall / list / cold / forget` 四处加一行声明并清孤立代理；状态面板热块改用与系统提示同一套边界 |
 | v0.8.0 | 写入语义（C 组）：`save()` 落盘后校验字节数 + 读回尾部（失败即抛，交重试队列，不再「rename 完就当成功」）；嵌入返回不齐备时整批不写，杜绝「没有向量的半残卡」；`/memory` 状态新增三项告警（写入失败次数 / 重试队列深度 / 缺向量卡数）。另修 A3：`/memory forget` 回显改用不劈代理对的安全截断 |
 | v0.7.0 | 注入面加固（A 组）：hot 块出口 `{{` 打断 + 孤立代理清理（宿主模板对完整 `{{x}}` 组抛错，命中即会话永久失败）；召回块加 `<untrusted-memory>` 边界与声明句，载荷内伪造的边界标记（含全角/零宽/实体变体）先被打断；新增 `lib/prompt-safety.js` 与 24 项守卫测试；hot 块同时套不可信边界 |

@@ -308,6 +308,46 @@ window.__ModuleLoader__.load({
       return payload;
     }
 
+    /**
+     * 把 mutate 的拒绝信封压成一句能定位问题的话。
+     *
+     * 宿主对「revision 不一致」和「字段校验失败 / 无权限」的返回结构并不相同，
+     * 早先一律笼统报「revision 仍不一致」，把真因全盖住了。这里按
+     * error → message → reason → code → detail 的优先级抽取文本；
+     * 其余字段只列键名——value 可能是整份配置，序列化会爆。
+     */
+    function summarizeRejection(response) {
+      if (response === undefined || response === null) return "宿主没有返回内容";
+      if (typeof response !== "object") return String(response);
+      var fields = ["error", "message", "reason", "code", "detail"];
+      var used = {};
+      var pieces = [];
+      for (var index = 0; index < fields.length; index += 1) {
+        var name = fields[index];
+        used[name] = true;
+        var raw = response[name];
+        if (raw === undefined || raw === null || raw === "") continue;
+        // Error / RemoteError 的 message 不是可枚举属性，JSON.stringify 会把它丢掉，
+        // 只剩 {code, details, name}——先直接取 message，取不到再退回序列化。
+        var text;
+        if (typeof raw === "string") text = raw;
+        else if (typeof raw.message === "string" && raw.message !== "") {
+          var rawCode = typeof raw.code === "string" && raw.code !== "" ? raw.code + "：" : "";
+          text = rawCode + raw.message;
+        } else text = JSON.stringify(raw);
+        if (pieces.indexOf(text) === -1) pieces.push(text);
+      }
+      var rest = [];
+      var keys = Object.keys(response);
+      for (var key = 0; key < keys.length; key += 1) {
+        if (used[keys[key]] === true) continue;
+        rest.push(keys[key]);
+      }
+      var summary = pieces.length > 0 ? pieces.join("；") : "宿主拒绝了写入，但没给出原因字段";
+      if (rest.length > 0) summary += "［返回的键：" + rest.join(", ") + "］";
+      return summary;
+    }
+
     /* ---------------- 组件 ---------------- */
 
     function makeSection(ctx) {
@@ -379,7 +419,11 @@ window.__ModuleLoader__.load({
                 return;
               }
               if (!allowRetry) {
-                setNote({ kind: "err", text: "保存被拒绝：revision 仍不一致，请刷新页面后重试" });
+                var detail = summarizeRejection(response);
+                if (response !== null && typeof response === "object" && response.revision !== undefined && String(response.revision) !== String(revision)) {
+                  detail += "；宿主当前 revision 是 " + String(response.revision) + "，本次提交的是 " + String(revision);
+                }
+                setNote({ kind: "err", text: "保存被拒绝：" + detail });
                 return;
               }
               rereadRevision().then(function (fresh) {

@@ -30,9 +30,12 @@ import {
 import { createBackend } from './lib/backend.js';
 import { autoExportMemory, exportStore } from './lib/exporter.js';
 import { classifySession, isUsefulLine, senderIdsOf } from './lib/im.js';
-import { setSelfNames } from './lib/ingest.js';
+// dream-C2：提取 noop 节奏的跳过判定（纯函数，见 lib/ingest.js）
+import { setSelfNames, shouldSkipExtract } from './lib/ingest.js';
 import { makeChatFn, makeDshChatFn, makeEmbedFn, probeOllama } from './lib/llm.js';
 import { collectModelCatalog, parseRuntimeList } from './lib/model-catalog.js';
+// A1/A3（qwen-code 借鉴）：年龄人话渲染 + 召回块预算（纯函数，见 lib/models.js）
+import { ageDays, ageText, LIMITS, stalenessCaveat } from './lib/models.js';
 // 注入面净化（施工清单 A1/A2）：只在出口改写注入副本，真源不动。见 lib/prompt-safety.js 头注。
 import { buildRecallText, QUERY_NOTICE, renderUntrustedBlock, sanitizeForContext, stripLoneSurrogates, truncateSafe } from './lib/prompt-safety.js';
 import { drainRetryQueue, enqueueRetry, loadRetryQueue, saveRetryQueue } from './lib/retry.js';
@@ -98,7 +101,17 @@ export const Config = z.object({
 	imBatchMaxLines: z.number().step(1).min(5).default(20).volatile().description('IM 单批最大消息条数（超出拆批；4B 长文注意力有限，别调太大）'),
 	rememberThrottleSeconds: z.number().step(1).min(10).default(45).volatile().description('桌面会话两次写入的最小间隔（秒），防高频触发'),
 	maintenanceMinutes: z.number().step(1).min(1).default(60).volatile().description('定时维护间隔（分钟）'),
-	exportDir: z.string().default('').volatile().description('记忆导出目录（v0.4）：维护期自动导出快照（24h 节流）+ /memory export 手动导出；留空=不导出。建议填工作区下的一个目录，如 <工作区>/memory-export'),
+	// ---- dream 组（qwen-code 借鉴施工清单，2026-11-12）----
+	freshnessCaveat: z.boolean().default(true).volatile().description('新鲜度人话注入（A1）：召回/热块里的卡标注"N天前"，含超 1 天旧记忆时附时点告诫——模型不会算日期，裸时间戳触发不了过时推理'),
+	secretScan: z.boolean().default(true).volatile().description('写入面密钥扫描（A2）：提取产物命中凭据特征（云 AK/SK、GitHub PAT、私钥头等）整条拒写，防群聊里的 token 被提炼成长期卡'),
+	writeBudget: z.boolean().default(true).volatile().description('写入预算（A3）：单卡正文超 1200 字先打回 LLM 重压缩一次，仍超安全截断；召回块总量超 2000 字按名次裁剪'),
+	vocabulary: z.boolean().default(true).volatile().description('关键词词表（A4）：提取提示词注入库内高频词（与 BM25 同切词口径），新卡用词向存量收敛，字面检索不断链'),
+	dreamManifest: z.boolean().default(true).volatile().description('批量合并清单协议（B2）：维护期合并升级为"候选池→LLM一次提案→运行时校验→确定性执行"，支持拆分（split）；关掉退回旧两两合并'),
+	dreamDryRun: z.boolean().default(true).volatile().description('dream 干跑（B2/D1）：只出提案清单写日志不执行；首轮验收提案质量后关掉，才真正自动合并'),
+	dirtyGate: z.boolean().default(true).volatile().description('脏度门控（C1）：维护定时器到点时库没有新变化（脏度<阈值）就跳过 LLM 步（合并/过期），只跑轻量步，不烧 token'),
+	dirtyThreshold: z.number().step(1).min(1).default(20).volatile().description('脏度阈值（C1）：写入/更新/软删累计这么多次才在维护期跑 LLM 步（≈一天的写入量）'),
+	noopSkip: z.boolean().default(false).volatile().description('提取 noop 节奏（C2）：连续 2 轮提取零产出就跳过后续提取（连跳上限 3 轮、窗口满或显式 remember 立即恢复，游标不丢消息）；qwen-code 同款默认关，等验证后再开'),
+	exportDir: z.string().default('').volatile().description('记忆导出目录（v0.4）：维护期自动导出快照（24h 节流）+ /memory export 手动导出；留空=不导出。建议 C:\\Users\\lanyi\\.dsh\\workspace\\memory-export'),
 	exportFormat: z.string().default('md').volatile().description('导出格式：md（人读，scope/tier 分节）/ json（cards.json 同构快照）'),
 
 	// ---- 热层与权重 ----
@@ -130,12 +143,6 @@ export function apply(ctx, config) {
 
 	// ---- 配置快照（handler 里现读，volatile 即时生效） ----
 	const dataDir = readTrimmedString(config.dataDir) || join(pluginDir, 'data');
-
-	/**
-	 * 把配置里的 IM 本人昵称同步进写入管线（v0.6.1：原来硬编码在提示词里，
-	 * 现在由 imSelfNames 提供；volatile 字段每轮现读，改了不用重启）。
-	 */
-	const syncSelfNames = () => setSelfNames(readTrimmedString(config.imSelfNames));
 
 	// ---- v0.6.0 工作区注册表：ws 键 → 规范 cwd（同名目录去歧义），data/workspaces.json 持久化 ----
 	const wsRegistryPath = join(dataDir, 'workspaces.json');
@@ -205,7 +212,17 @@ export function apply(ctx, config) {
 		gcSupersededDays: 14,
 		gcColdDays: 30,
 		retryQueue: true,
-		pythonAutoStart: false
+		pythonAutoStart: false,
+		// dream 组（qwen-code 借鉴施工清单）
+		freshnessCaveat: true,
+		secretScan: true,
+		writeBudget: true,
+		vocabulary: true,
+		dreamManifest: true,
+		dreamDryRun: true,
+		dirtyGate: true,
+		dirtyThreshold: 20,
+		noopSkip: false
 	};
 	const STRING_DEFAULTS = {
 		backend: 'local',
@@ -371,7 +388,7 @@ export function apply(ctx, config) {
 	let readyResolve;
 	const ready = new Promise((resolve) => { readyResolve = resolve; });
 	const lastRecallTurn = new Map(); // sessionId → turn（每轮只注入一次）
-	// A1 跨轮注入冷却：sessionId → Map(cardId → 注入时间戳)。
+	// A1 跨轮注入冷却（施工清单）：sessionId → Map(cardId → 注入时间戳)。
 	// 24h 内注入过的卡不再注入，防同一张卡轮轮命中轮轮注入（token 白吃 + 唠叨）。
 	const injectedAt = new Map();
 	const RECALL_COOLDOWN_MS = 24 * 60 * 60 * 1000;
@@ -610,7 +627,7 @@ export function apply(ctx, config) {
 				let hits = raw.filter(
 					(hit) => Number(hit.relevance) >= minRel || Number(hit.bm25 ?? 0) >= bm25Min
 				);
-				// A1 跨轮冷却：24h 内注入过的卡滤掉；逃生门命中时放行（见声明处注释）。
+				// A1 跨轮冷却（施工清单）：24h 内注入过的卡滤掉；逃生门命中时放行（见声明处注释）。
 				let cooled = 0;
 				if (!escapeCooldown && hits.length > 0) {
 					const seenCards = injectedAt.get(sessionId);
@@ -637,9 +654,9 @@ export function apply(ctx, config) {
 					(hits.length > 0 ? ` → ${hits.map((h) => h.card.content.slice(0, 18)).join(' | ')}` : '')
 				);
 				if (!hits.length || payload.signal.aborted) return decision;
-				// A2 历史查重：同内容召回块已在上文尾部（重放/边界场景）则本轮不注入。
+				// A2 历史查重（施工清单）：同内容召回块已在上文尾部（重放/边界场景）则本轮不注入。
 				// memoryNotice 首尾带 [memory recall] 围栏，此处比对全文。
-				const notice = memoryNotice(hits);
+				const notice = memoryNotice(hits, { caveat: readConfigValue(config.freshnessCaveat) !== false });
 				const noticeText = textOf(notice);
 				const alreadyInjected = decision.messages
 					.slice(-6)
@@ -700,6 +717,13 @@ export function apply(ctx, config) {
 	const imQueues = new Map();       // sessionId → { messages: [{role,content}], timer }
 	const lastRememberAt = new Map(); // sessionId → ts（桌面节流）
 	const rememberTail = new Map();   // sessionId → 上次已交提取的末条签名（A4 游标）
+	const extractNoopStreak = new Map(); // dream-C2：sessionId → 连续零产出轮数
+
+	/**
+	 * 把配置里的 IM 本人昵称同步进写入管线（v0.6.1：原来硬编码在提示词里，
+	 * 现在由 imSelfNames 提供；volatile 字段每轮现读，改了不用重启）。
+	 */
+	const syncSelfNames = () => setSelfNames(readTrimmedString(config.imSelfNames));
 
 	// IM 双闸判据（classifySession）与前置闸（isUsefulLine）在 lib/im.js——纯函数，测试锁定行为
 
@@ -714,10 +738,13 @@ export function apply(ctx, config) {
 			void debugLog(
 				`remember OK 提取${report.factsExtracted} ADD${report.added.length} ` +
 				`UPDATE${report.updated.length} DELETE${report.deleted.length} ` +
-				`跳过${report.skipped} 去重${report.deduped ?? 0} 强制${report.forced ?? 0}`
+				`跳过${report.skipped} 去重${report.deduped ?? 0} 强制${report.forced ?? 0}` +
+				`${report.truncated ? ` 截断${report.truncated}` : ''}` +
+				`${report.secretBlocked?.length ? ` 密钥拒写${report.secretBlocked.length}(${report.secretBlocked.map((b) => b.rule).join(',')})` : ''}`
 			);
 			// v0.3.4：写入通道恢复了，顺手把上次失败的窗口补进去（队列空时零开销）
 			void drainRetryQueueFromDisk();
+			return report; // dream-C2：调用方按产出判定 noop（写入失败返回 undefined，不计数）
 		} catch (error) {
 			// ollamaOk 只反映本地 ollama（embed/召回通道）：dsh 云端路由的失败与它无关
 			if (chatRoute() === 'local') ollamaOk = false;
@@ -849,12 +876,37 @@ export function apply(ctx, config) {
 			void debugLog(`桌面提取：无新增（游标命中，窗口${dialog.length}条）`);
 			return;
 		}
+		// dream-C2：noop 节奏——连续 2~3 轮提取零产出时跳过本轮（判定在调用前，
+		// 省的就是 LLM 调用）。窗口满（未处理消息堆满 20 条提取窗）立即恢复防漏；
+		// 跳过时游标不前进，增量自然累积到恢复后那一次——可见一次，不是两次。
+		const noopStreak = extractNoopStreak.get(sessionId) ?? 0;
+		if (
+			shouldSkipExtract(noopStreak, dialog.length, {
+				enabled: readConfigValue(config.noopSkip) !== false
+			})
+		) {
+			void debugLog(`C2：连续 ${noopStreak} 轮提取零产出且窗口未满（${dialog.length}/20），跳过本轮提取`);
+			return;
+		}
 		lastRememberAt.set(sessionId, Date.now());
 		rememberTail.set(sessionId, dialogEntrySignature(dialog[dialog.length - 1]));
 		void debugLog(`桌面提取：增量${feed.length}条（窗口${dialog.length}条）`);
 		// v0.6.0：桌面写入携带会话工作区键，general=false 的新卡挂这个标
 		void rememberDialog(sessionId, feed, {
 			workspace: sessionWorkspace(String(payload.agent?.session?.header?.cwd ?? ''))
+		}).then((report) => {
+			// dream-C2：按产出更新连续零产出计数（写入失败 report 为 undefined，不计数）
+			if (!report) return;
+			const produced =
+				report.added.length + report.updated.length + report.deleted.length > 0 ||
+				(report.secretBlocked?.length ?? 0) > 0;
+			if (produced) {
+				extractNoopStreak.set(sessionId, 0);
+				return;
+			}
+			const next = (extractNoopStreak.get(sessionId) ?? 0) + 1;
+			extractNoopStreak.set(sessionId, next);
+			if (next >= 2) void debugLog(`C2：第 ${next} 轮连续提取零产出`);
 		});
 	});
 
@@ -906,7 +958,7 @@ export function apply(ctx, config) {
 		};
 		yield ctx.commands.register({
 			name: 'memory',
-			description: '长期记忆：直接输入查看状态；recall <查询> / remember <内容> / list / maintenance / export / cold <关键词>',
+			description: '长期记忆：直接输入查看状态；recall <查询> / remember <内容> / list / merge [--apply] / maintenance / export / cold <关键词>',
 			handler: async (invocation) => {
 				const raw = String(invocation?.rawInput ?? '').trim();
 				const [verb, ...rest] = raw.split(/\s+/);
@@ -934,6 +986,24 @@ export function apply(ctx, config) {
 					if (verb === 'maintenance') {
 						const stats = await runMaintenance();
 						return { kind: 'success', text: `维护完成：${JSON.stringify(stats)}` };
+					}
+					if (verb === 'merge') {
+						// dream-B2 手动入口：默认 dry-run 只出提案（D1 首轮验收模式），
+						// --apply 才真正执行。共享维护期同款 B1 保护（失败整批回滚）。
+						if (!backend.engine?.dream) return { kind: 'error', text: 'python 后端暂不支持 merge' };
+						const apply = arg.includes('--apply');
+						const stats = await backend.engine.dream({ dryRun: !apply });
+						if (stats.skipped) return { kind: 'success', text: `本次无可整理项：${stats.skipped}` };
+						if (stats.rejected) return { kind: 'success', text: `提案被运行时否决（整单作废）：${stats.rejected}` };
+						const parts = [`候选 ${stats.checked} 项`];
+						if (stats.proposal) parts.push(`提案：\n${stats.proposal}`);
+						parts.push(
+							apply
+								? `已执行：合并 ${stats.deduped} 拆分 ${stats.split}，触碰 ${stats.touched.length} 张卡（旧值已归档，可 /memory cold 翻查）`
+								: 'dry-run 未执行；确认提案无误后用 /memory merge --apply 落地'
+						);
+						await refreshHot();
+						return { kind: 'success', text: `dream 整理：\n${parts.join('\n')}` };
 					}
 					if (verb === 'export') {
 						const dir = readTrimmedString(config.exportDir);
@@ -1039,7 +1109,7 @@ function isPluginMessage(message) {
 }
 
 /**
- * A3合成内容判别：压缩摘要、宿主系统注入、本插件召回块都不是
+ * A3（施工清单）合成内容判别：压缩摘要、宿主系统注入、本插件召回块都不是
  * 用户/助手真的说过的话。两处消费：提取管道（防摘要转述被记成事实——二次
  * 转述=幻觉进库）与召回查询派生（防拿摘要当用户查询）。
  */
@@ -1050,26 +1120,51 @@ function isSyntheticExtractionNoise(text) {
 	return false;
 }
 
-/** 召回结果 → 一条 notice 用户消息。 */
-function memoryNotice(hits) {
+/**
+ * 召回结果 → 一条 notice 用户消息。
+ *
+ * v0.7.0（A2）：正文改由 lib/prompt-safety.js 的 buildRecallText 组装——记忆正文属**不可信数据**，
+ * 必须带边界与声明，且载荷里伪造的边界标记先被打断。抬头 `[memory recall]` 仍在第一行，
+ * 保证 isPluginMessage / isSyntheticExtractionNoise 的 startsWith 判定不变（否则召回块会被
+ * 当成普通用户消息重新提炼进库，记忆自我污染）。
+ *
+ * dream-A1（qwen-code 借鉴）：年龄渲染成人话——模型不会做日期算术，"30天前"能触发
+ * 陈旧推理，MM-dd 日期串不能。今天/昨天不标（fresh 无需打折，省字符）。
+ * dream-A3：召回块总量预算——按名次装到 LIMITS.recallBlockChars 为止，装不下的进尾注
+ * （与 hot 块渲染纪律同一套）；含超 1 天旧卡时块尾附时点告诫（开关 freshnessCaveat）。
+ */
+function memoryNotice(hits, { caveat = true } = {}) {
 	const lines = hits.map((hit) => {
-		// v0.4.9 时间线标注：事实"从何时起是真的"。今天刚写的不标（省字符），
-		// ≥1 天的带 自MM-dd——模型据此判断信息新旧，过时记忆自己会打折。
-		const from = Number(hit.card.validFrom ?? hit.card.createdAt ?? 0);
-		const ageDays = from > 0 ? (Date.now() - from) / 86400000 : 0;
-		const when = ageDays >= 1 ? ` 自${fmtMonthDay(from)}` : '';
+		const days = ageDays(hit.card);
+		const when = days >= 1 ? ` ${ageText(days)}` : '';
 		const rel = Number(hit.relevance);
 		const relTag = rel >= 0.01 ? `相关${rel.toFixed(2)}` : `字面${Number(hit.bm25 ?? 0).toFixed(2)}`;
 		return `- [${hit.card.category} 重要${Number(hit.card.importance).toFixed(2)} ${relTag}${when}] ${hit.card.content}`;
 	});
+	let used = 0;
+	let keptCount = 0;
+	for (const line of lines) {
+		if (used + line.length > LIMITS.recallBlockChars) break;
+		used += line.length;
+		keptCount += 1;
+	}
+	const dropped = lines.length - keptCount;
+	const keptCards = hits.slice(0, keptCount).map((hit) => hit.card);
+	const footer = [];
+	if (dropped > 0) footer.push(`（已省略 ${dropped} 条，需要时用 /memory recall <关键词> 查询）`);
+	if (caveat) {
+		const warn = stalenessCaveat(keptCards);
+		if (warn) footer.push(warn);
+	}
+	footer.push(
+		'（以上是历史记忆，仅供参考；与当前语境无关时请忽略）',
+		// A2 闭合围栏：与首行 [memory recall] 成对，历史查重按"围栏块全文相等"判定
+		'[/memory recall]'
+	);
 	const text = buildRecallText({
 		header: '[memory recall] 根据用户当前消息，从长期记忆库中检索到以下内容（按匹配度排序）：',
-		lines,
-		footer: [
-			'（以上是历史记忆，仅供参考；与当前语境无关时请忽略）',
-			// A2 闭合围栏：与首行 [memory recall] 成对，历史查重按"围栏块全文相等"判定
-			'[/memory recall]'
-		]
+		lines: lines.slice(0, keptCount),
+		footer
 	});
 	return createUserMessage({
 		content: [{ type: 'text', text }],
@@ -1084,13 +1179,6 @@ function memoryNotice(hits) {
 /** A4 游标签名：role + 全文。相同签名视为同一条消息（查重窗口内足够稳定）。 */
 function dialogEntrySignature(entry) {
 	return `${entry?.role ?? ''}\u0000${entry?.content ?? ''}`;
-}
-
-/** MM-dd 短日期。 */
-function fmtMonthDay(ms) {
-	const d = new Date(Number(ms ?? 0));
-	const pad = (n) => String(n).padStart(2, '0');
-	return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 function errorMessage(error) {

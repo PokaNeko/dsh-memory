@@ -13,7 +13,7 @@ import { test } from 'node:test';
 import { applyLegacyWsMap, MemoryEngine } from '../lib/engine.js';
 import { autoExportMemory, exportStore } from '../lib/exporter.js';
 import { expireStaleFacts, purgeStale } from '../lib/gc.js';
-import { sameFactNormalized, setSelfNames } from '../lib/ingest.js';
+import { sameFactNormalized } from '../lib/ingest.js';
 import { classifySession, IM_SENDER_RE, isUsefulLine, senderIdsOf } from '../lib/im.js';
 import { extractJson, makeDshChatFn, stripThink } from '../lib/llm.js';
 import { Category, createCard, Status, Tier } from '../lib/models.js';
@@ -27,9 +27,6 @@ import {
 	workspaceKeyOf,
 	workspaceVisible
 } from '../lib/workspace.js';
-
-// IM 场景的"本人昵称"用示例名 Ame（真实使用时由配置项 imSelfNames 提供）。
-setSelfNames(['Ame']);
 
 /** 造一个只在第 idx 维为 1 的单位向量（手工控制余弦用）。 */
 function unitVec(idx) {
@@ -80,6 +77,11 @@ function makeConfig(overrides = {}) {
 		wRelevance: 0.5,
 		wImportance: 0.3,
 		wFreshness: 0.2,
+		// dream 组（qwen-code 借鉴施工清单）：存量测试锁定**旧行为**——
+		// dirtyGate:false = 维护期每轮全量跑 LLM 步；dreamManifest:false = 旧两两
+		// 合并（fake chat 脚本是 MERGE_PROMPT 格式）。新协议行为由 dream.test.mjs 锁定。
+		dirtyGate: false,
+		dreamManifest: false,
 		...overrides
 	};
 }
@@ -255,30 +257,30 @@ test('数据落盘并可重载', async () => {
 // v0.2.1~v0.2.4 防线（2026-10-23 清债补测）
 // ----------------------------------------------------------------------
 test('IM 双闸判据：cwd 与 [名字 (ID)] 前缀缺一不可', () => {
-	const prefixed = [{ role: 'user', content: '[Ame (0A1B2C3D4E5F60718293A4B5C6D7E8F9)] 早啊各位' }];
+	const prefixed = [{ role: 'user', content: '[PokaNeko (5F2AAE298C6C1056E50ABFDB9A9B53EA)] 早啊各位' }];
 	const plain = [{ role: 'user', content: '早啊，随便聊聊' }];
 	// 本 GUI 实况：cwd 不含 profiles 但消息无前缀 → 桌面（v0.2.4 修的就是这个误判）
-	assert.equal(classifySession('C:\\Users\\test\\.dsh\\workspace', plain), 'desktop');
+	assert.equal(classifySession('C:\\Users\\lanyi\\.dsh\\workspace', plain), 'desktop');
 	// QQ：cwd 不含 profiles 且带桥前缀 → IM
-	assert.equal(classifySession('C:\\Users\\test\\.dsh\\workspace', prefixed), 'im');
+	assert.equal(classifySession('C:\\Users\\lanyi\\.dsh\\workspace', prefixed), 'im');
 	// profiles 目录下必是桌面
-	assert.equal(classifySession('C:\\Users\\test\\.dsh\\profiles\\desktop', plain), 'desktop');
+	assert.equal(classifySession('C:\\Users\\lanyi\\.dsh\\profiles\\desktop', plain), 'desktop');
 	// 无 cwd / 异常输入保守护栏
 	assert.equal(classifySession('', prefixed), 'desktop');
 	assert.equal(classifySession('C:\\work', null), 'desktop');
-	assert.ok(IM_SENDER_RE.test('[Alice (9F8E7D6C5B4A39281706F5E4D3C2B1A0)] 在吗'));
+	assert.ok(IM_SENDER_RE.test('[Alice (988AAF26863FEDF4ED3A5A397C43B211)] 在吗'));
 	assert.ok(!IM_SENDER_RE.test('普通消息 (123)'));
 });
 
 test('IM 前置闸：剥前缀后过滤短消息与纯数字/符号', () => {
-	assert.ok(isUsefulLine('[Alice (9F8E7D6C5B4A39281706F5E4D3C2B1A0)] 明天数学考试范围说一下'));
-	assert.ok(!isUsefulLine('[Alice (9F8E7D6C5B4A39281706F5E4D3C2B1A0)] apt'));    // 剥前缀后 3 字符
-	assert.ok(!isUsefulLine('[Alice (9F8E7D6C5B4A39281706F5E4D3C2B1A0)] 123123')); // 纯数字
+	assert.ok(isUsefulLine('[Alice (988AAF26863FEDF4ED3A5A397C43B211)] 明天数学考试范围说一下'));
+	assert.ok(!isUsefulLine('[Alice (988AAF26863FEDF4ED3A5A397C43B211)] apt'));    // 剥前缀后 3 字符
+	assert.ok(!isUsefulLine('[Alice (988AAF26863FEDF4ED3A5A397C43B211)] 123123')); // 纯数字
 	assert.ok(!isUsefulLine('短的'));                                              // 无前缀短消息
 });
 
 test('跨表述查重：人称归一同实相等，反例不误并', () => {
-	assert.ok(sameFactNormalized('Ame喜欢喝碳酸饮料', '我喜欢喝碳酸饮料'));
+	assert.ok(sameFactNormalized('PokaNeko喜欢喝碳酸饮料', '我喜欢喝碳酸饮料'));
 	assert.ok(!sameFactNormalized('用户喜欢喝碳酸饮料', '用户讨厌喝碳酸饮料')); // 喜欢≠讨厌
 	assert.ok(!sameFactNormalized('群友Alice是课代表', '群友Bob是课代表'));     // 群友名字是身份
 	assert.ok(!sameFactNormalized('我', '我'));                                 // 归一后为空不判重
@@ -288,7 +290,7 @@ test('跨表述查重：人称归一同实相等，反例不误并', () => {
 
 test('写入管线：跨表述重复被人称归一兜底拦截（v0.2.4 实战场景回放）', async () => {
 	const extract = JSON.stringify({
-		facts: [{ content: 'Ame喜欢喝碳酸饮料', category: 'preference', importance: 0.55 }]
+		facts: [{ content: 'PokaNeko喜欢喝碳酸饮料', category: 'preference', importance: 0.55 }]
 	});
 	const decide = JSON.stringify({
 		decisions: [{ action: 'ADD', fact_index: 0, card_id: null, content: null }]
@@ -297,7 +299,7 @@ test('写入管线：跨表述重复被人称归一兜底拦截（v0.2.4 实战�
 	seed(engine, '我喜欢喝碳酸饮料', Category.PREFERENCE, 0.65);
 	engine.chat = makeFakeChat([extract, decide]);
 	const report = await engine.remember(
-		[{ role: 'user', content: '[Ame (0A1B2C3D4E5F60718293A4B5C6D7E8F9)] 我喜欢喝碳酸饮料' }],
+		[{ role: 'user', content: '[PokaNeko (5F2AAE298C6C1056E50ABFDB9A9B53EA)] 我喜欢喝碳酸饮料' }],
 		{ groupMode: true }
 	);
 	assert.equal(report.added.length, 0);
@@ -518,15 +520,16 @@ test('维护期自动合并：同 scope 近似对合并、跨 scope 不动、重
 
 test('senderIdsOf：提取去重排序的发言者 ID', () => {
 	const dialog = [
-		{ role: 'user', content: '[Ame (0A1B2C3D4E5F60718293A4B5C6D7E8F9)] 早' },
+		{ role: 'user', content: '[PokaNeko (5F2AAE298C6C1056E50ABFDB9A9B53EA)] 早' },
 		{ role: 'assistant', content: '早上好' },
-		{ role: 'user', content: '[Alice (9F8E7D6C5B4A39281706F5E4D3C2B1A0)] 在吗' },
-		{ role: 'user', content: '[ame (0a1b2c3d4e5f60718293a4b5c6d7e8f9)] 大小写归一' },
+		{ role: 'user', content: '[Alice (988AAF26863FEDF4ED3A5A397C43B211)] 在吗' },
+		{ role: 'user', content: '[pokaneko (5faae298c6c1056e50abfdb9a9b53ea)] 大小写归一' },
 		{ role: 'user', content: '没有前缀的普通消息' }
 	];
 	assert.deepEqual(senderIdsOf(dialog), [
-		'0A1B2C3D4E5F60718293A4B5C6D7E8F9', // 首条与 "ame" 那条是同一个 ID 的大小写变体 → 归一后去重
-		'9F8E7D6C5B4A39281706F5E4D3C2B1A0'
+		'5F2AAE298C6C1056E50ABFDB9A9B53EA',
+		'5FAAE298C6C1056E50ABFDB9A9B53EA',
+		'988AAF26863FEDF4ED3A5A397C43B211'
 	]);
 	assert.deepEqual(senderIdsOf(null), []);
 });
@@ -833,8 +836,8 @@ test('parseRuntimeList/stripV1：解析容错、apiKey 归一与端点归一', (
 	assert.deepEqual(parseRuntimeList('bad json'), []);
 	assert.deepEqual(parseRuntimeList('[{"id":"llama.cpp","baseUrl":"http://127.0.0.1:8080"}]'),
 		[{ id: 'llama.cpp', baseUrl: 'http://127.0.0.1:8080', apiKey: '' }]);
-	assert.deepEqual(parseRuntimeList('[{"id":"deepseek","baseUrl":"https://api.deepseek.com/v1","apiKey":"sk-test-000"}]'),
-		[{ id: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', apiKey: 'sk-test-000' }]);
+	assert.deepEqual(parseRuntimeList('[{"id":"deepseek","baseUrl":"https://api.deepseek.com/v1","apiKey":"sk-123"}]'),
+		[{ id: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', apiKey: 'sk-123' }]);
 	assert.equal(stripV1('http://127.0.0.1:11434/v1'), 'http://127.0.0.1:11434');
 	assert.equal(stripV1('http://127.0.0.1:11434/'), 'http://127.0.0.1:11434');
 	assert.equal(stripV1(''), '');
@@ -851,32 +854,32 @@ test('collectModelCatalog：端点 apiKey 走 Authorization 头拉模型', async
 	};
 	const catalog = await collectModelCatalog({
 		ollamaBaseUrl: 'http://127.0.0.1:11434/v1',
-		runtimes: [{ id: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', apiKey: 'sk-test-abc' }],
+		runtimes: [{ id: 'deepseek', baseUrl: 'https://api.deepseek.com/v1', apiKey: 'sk-abc' }],
 		llm: null,
 		fetchImpl
 	});
 	assert.equal(catalog.runtimes[0].ok, true);
 	assert.deepEqual(catalog.runtimes[0].models, ['deepseek-chat', 'deepseek-reasoner']);
-	assert.deepEqual(seenHeaders, { Authorization: 'Bearer sk-test-abc' });
+	assert.deepEqual(seenHeaders, { Authorization: 'Bearer sk-abc' });
 });
 
 // ----------------------------------------------------------------------
 // v0.6.0 工作区分离
 // ----------------------------------------------------------------------
 test('workspaceKeyOf/resolveWorkspaceKey：末级目录名归一、同名去歧义、异常输入兜底', () => {
-	assert.equal(workspaceKeyOf('C:\\Users\\test\\.dsh\\workspace\\dsh-memory'), 'dsh-memory');
-	assert.equal(workspaceKeyOf('D:\\notes'), 'notes');
-	assert.equal(workspaceKeyOf('C:\\Users\\test\\.dsh\\workspace'), 'workspace');
+	assert.equal(workspaceKeyOf('C:\\Users\\lanyi\\.dsh\\workspace\\dsh-memory'), 'dsh-memory');
+	assert.equal(workspaceKeyOf('E:\\notes'), 'notes');
+	assert.equal(workspaceKeyOf('C:\\Users\\lanyi\\.dsh\\workspace'), 'workspace');
 	assert.equal(workspaceKeyOf(''), GENERAL_WORKSPACE);          // 空 cwd
 	assert.equal(workspaceKeyOf('D:\\'), GENERAL_WORKSPACE);       // 纯盘符
 	assert.equal(workspaceKeyOf(null), GENERAL_WORKSPACE);         // 异常输入
 	// 大小写与分隔符变体归同一个键
-	assert.equal(workspaceKeyOf('C:/USERS/TEST/.dsh/workspace/Notes/'), 'notes');
+	assert.equal(workspaceKeyOf('C:/USERS/LANYI/.dsh/workspace/Notes/'), 'notes');
 	// 同名目录去歧义：不同路径的 notes，后来者加短 hash 后缀
 	const registry = new Map();
-	assert.equal(resolveWorkspaceKey('D:\\notes', registry), 'notes');
+	assert.equal(resolveWorkspaceKey('E:\\notes', registry), 'notes');
 	assert.equal(resolveWorkspaceKey('C:\\doc\\notes', registry), 'notes~' + shortHash('c:/doc/notes'));
-	assert.equal(resolveWorkspaceKey('D:\\notes', registry), 'notes'); // 原键稳定复用
+	assert.equal(resolveWorkspaceKey('E:\\notes', registry), 'notes'); // 原键稳定复用
 });
 
 test('workspaceVisible：通用卡处处可见，工作区卡只在本区可见，null 不过滤', () => {

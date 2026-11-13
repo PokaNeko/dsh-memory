@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 
 import { MemoryEngine } from '../lib/engine.js';
-import { EXTRACT_PROMPT, EXTRACT_PROMPT_GROUP } from '../lib/ingest.js';
+import { EXTRACT_PROMPT, EXTRACT_PROMPT_GROUP, sameFactNormalized, setSelfNames } from '../lib/ingest.js';
 import { Category, createCard } from '../lib/models.js';
 import {
 	DIALOG_CLOSE,
@@ -164,6 +164,26 @@ test('A6 群聊提取提示词：同样有边界，粗粒度标准原样保留',
 	assert.ok(p.includes('PokaNeko 是用户本人，其余名字是群友'));
 	assert.ok(p.includes(EXTRACT_PROMPT_GROUP.slice(0, 40)), '群聊模板抬头被改动');
 	assert.ok(!p.includes(EXTRACT_PROMPT.slice(0, 40)), '群聊路径误用了桌面模板');
+});
+
+test('v0.6.1 imSelfNames：配置昵称后身份段与别名归一随名单切换，缺省保持 PokaNeko', async () => {
+	// 缺省态先验一遍（与上一条测试同口径，确保 setter 回落正确）
+	setSelfNames('');
+	assert.ok(sameFactNormalized('PokaNeko喜欢喝碳酸饮料', '我喜欢喝碳酸饮料'), '缺省别名归一被破坏');
+	setSelfNames('小明,阿鱼');
+	try {
+		const chat = makeCapturingChat([EMPTY_EXTRACT]);
+		const engine = await makeEngine(chat);
+		await engine.remember([{ role: 'user', content: '[小明 (1234)] 我喜欢喝果汁' }], { groupMode: true });
+		const p = chat.prompts[0];
+		assert.ok(p.includes('小明、阿鱼 是用户本人'), '配置昵称未进群聊身份段');
+		assert.ok(!p.includes('PokaNeko 是用户本人'), '缺省身份段应被替换');
+		assert.ok(sameFactNormalized('小明喜欢喝碳酸饮料', '我喜欢喝碳酸饮料'), '别名归一未随配置切换');
+		assert.ok(sameFactNormalized('阿鱼喜欢喝碳酸饮料', '我喜欢喝碳酸饮料'), '名单第二个昵称未生效');
+	} finally {
+		setSelfNames(''); // 还原缺省，避免污染后续测试
+	}
+	assert.ok(sameFactNormalized('PokaNeko喜欢喝碳酸饮料', '我喜欢喝碳酸饮料'), '还原后缺省归一应恢复');
 });
 
 test('A6 $ 替换模式漏洞：素材含 $& / $` / $\' 时不得展开提示词', async () => {
